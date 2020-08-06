@@ -5,10 +5,17 @@
     android:layout_height="match_parent"
     android:fitsSystemWindows="true">
 
-    <androidx.camera.view.CameraView
-        android:id="@+id/photo_camera_view"
+    <FrameLayout
+        android:id="@+id/photo_camera_view_container"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"/>
+
+    <View
+        android:id="@+id/photo_camera_shutter_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:background="#FFF"/>
 
     <LinearLayout
         android:layout_width="wrap_content"
@@ -38,8 +45,6 @@
             android:layout_height="48dp"
             android:layout_marginTop="8dp"
             android:padding="8dp" />
-
-
 
     </LinearLayout>
 

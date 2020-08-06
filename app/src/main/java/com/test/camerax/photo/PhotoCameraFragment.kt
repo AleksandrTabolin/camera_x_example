@@ -1,45 +1,106 @@
 package com.test.camerax.photo
 
-import android.content.ContentResolver
+import android.animation.Animator
+import android.annotation.SuppressLint
 import android.content.Intent
+import android.media.MediaActionSound
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
-import androidx.camera.core.CameraSelector
+import android.view.animation.AccelerateDecelerateInterpolator
 import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageProxy
-import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.Observer
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import com.test.camerax.R
-import com.test.camerax.core.BaseCameraFragment
-import com.test.camerax.core.CameraProvider
+import com.test.camerax.core.CameraPermissionsResolver
+import com.test.camerax.core.camera.CustomCameraProvider
+import com.test.camerax.core.camera.DefaultCameraProvider
 import com.test.camerax.core.observeOneTimeEvent
+import com.test.camerax.core.showSnackbar
 import com.test.camerax.photo.state.PhotoCameraState
 import kotlinx.android.synthetic.main.fragment_photo_camera.*
 
 
-class PhotoCameraFragment : BaseCameraFragment(R.layout.fragment_photo_camera), CameraProvider {
+class PhotoCameraFragment : Fragment(R.layout.fragment_photo_camera) {
 
-    private val viewModel: PhotoCameraViewModel by viewModels()
+    private val viewModel: PhotoCameraViewModel by viewModels(
+        factoryProducer = {
+            object : ViewModelProvider.Factory {
+                override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+                    return PhotoCameraViewModel(requireActivity().contentResolver) as T
+                }
+            }
+        }
+    )
+
+    private val cameraPermissionsResolver = CameraPermissionsResolver(this)
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        startCameraPreview(photo_camera_view)
-        viewModel.cameraProvider = this
+        startCameraPreview()
 
         photo_camera_take_picture_button.setOnClickListener { viewModel.onTakePhotoClicked() }
-        photo_camera_switch_lens_facing_button.setOnClickListener { switchLensFacing() }
-        photo_camera_toggle_flash_button.setOnClickListener { toggleFlash() }
-        photo_camera_toggle_torch_button.setOnClickListener { toggleTorch() }
+        photo_camera_switch_lens_facing_button.setOnClickListener { viewModel.onSwitchLensFacingClicked() }
+        photo_camera_toggle_flash_button.setOnClickListener { viewModel.onToggleFlashClicked() }
+        photo_camera_toggle_torch_button.setOnClickListener { viewModel.onToggleTorchClicked() }
 
         viewModel.screenState.observe(
             viewLifecycleOwner,
             Observer { state -> updateScreenState(state) })
 
-        viewModel.showMessage.observeOneTimeEvent(viewLifecycleOwner, ::showSnackbar)
+        viewModel.showMessage.observeOneTimeEvent(viewLifecycleOwner) { showSnackbar(it) }
+
+        viewModel.showShutter.observeOneTimeEvent(viewLifecycleOwner) { showShutter() }
 
         viewModel.openGalley.observeOneTimeEvent(viewLifecycleOwner, ::openGallery)
 
+    }
+
+    private fun showShutter() {
+        MediaActionSound().play(MediaActionSound.SHUTTER_CLICK)
+        photo_camera_shutter_view.alpha = 0f;
+
+        photo_camera_shutter_view
+            .animate()
+            .alpha(1f)
+            .setInterpolator(AccelerateDecelerateInterpolator())
+            .setDuration(200)
+            .setListener(object : Animator.AnimatorListener {
+
+                override fun onAnimationRepeat(animation: Animator?) {}
+
+                override fun onAnimationEnd(animation: Animator?) {
+                    photo_camera_shutter_view.visibility = View.GONE
+                }
+
+                override fun onAnimationCancel(animation: Animator?) {
+                    photo_camera_shutter_view.visibility = View.GONE
+                }
+
+                override fun onAnimationStart(animation: Animator?) {
+                    photo_camera_shutter_view.visibility = View.VISIBLE
+                }
+            })
+            .start()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startCameraPreview() {
+        cameraPermissionsResolver.checkAndRequestPermissionsIfNeeded(
+            onSuccess = {
+                viewModel.cameraProvider =
+                    DefaultCameraProvider(photo_camera_view_container, viewLifecycleOwner)
+                        //CustomCameraProvider(photo_camera_view_container, viewLifecycleOwner)
+                showOverlay(false)
+            },
+            onFail = { message ->
+                showOverlay(true)
+                viewModel.cameraProvider = null
+                showSnackbar(message)
+            }
+        )
     }
 
     override fun onDestroyView() {
@@ -47,23 +108,8 @@ class PhotoCameraFragment : BaseCameraFragment(R.layout.fragment_photo_camera), 
         super.onDestroyView()
     }
 
-    override fun onCameraBindedToLifecycle(isBinded: Boolean) {
-        photo_camera_overlay.visibility = if (isBinded) View.GONE else View.VISIBLE
-
-        if (isBinded) {
-            updateFlashIcon(photo_camera_view.flash)
-            updateTorchIcon(photo_camera_view.isTorchOn)
-        }
-    }
-
-    override suspend fun takePicture(): ImageProxy? {
-        if (!isCameraBindedToLifecycle) return null
-        val result = takePictureInternal()
-        updateFlashIcon(photo_camera_view.flash)
-        updateTorchIcon(photo_camera_view.isTorchOn)
-
-        ContextCompat.getExternalFilesDirs(requireContext(), "");
-        return result;
+    private fun showOverlay(show: Boolean) {
+        photo_camera_overlay.visibility = if (!show) View.GONE else View.VISIBLE
     }
 
     private fun openGallery(uri: Uri) {
@@ -71,35 +117,22 @@ class PhotoCameraFragment : BaseCameraFragment(R.layout.fragment_photo_camera), 
         intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
         startActivity(intent)
     }
-    override fun provideContentResolver(): ContentResolver {
-        return requireActivity().contentResolver;
-    }
 
-    override fun switchLensFacing() {
-        val currentLensFacing = photo_camera_view.cameraLensFacing
-        photo_camera_view.cameraLensFacing = when (currentLensFacing) {
-            CameraSelector.LENS_FACING_FRONT -> CameraSelector.LENS_FACING_BACK
-            else -> CameraSelector.LENS_FACING_FRONT
+    private fun updateScreenState(state: PhotoCameraState) {
+        listOf(
+            photo_camera_switch_lens_facing_button,
+            photo_camera_toggle_flash_button,
+            photo_camera_toggle_torch_button,
+            photo_camera_take_picture_button
+        ).forEach { view ->
+            view?.isEnabled = state.enableInput
+            view?.alpha = if (state.enableInput) 1f else 0.5f
         }
+
+        updateFlashIcon(state.flashState)
+        updateTorchIcon(state.torchState)
     }
 
-     private fun toggleFlash() {
-         val nextFlash = when (photo_camera_view.flash) {
-             ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_OFF
-             ImageCapture.FLASH_MODE_ON -> ImageCapture.FLASH_MODE_AUTO
-             ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_ON
-             else -> throw IllegalStateException("Unsupport flash")
-         }
-
-         updateFlashIcon(nextFlash)
-         photo_camera_view.flash = nextFlash
-     }
-
-    private fun toggleTorch() {
-        val nextTorch = !photo_camera_view.isTorchOn
-        photo_camera_view.enableTorch(nextTorch)
-        updateTorchIcon(nextTorch)
-    }
 
     private fun updateTorchIcon(isTorchOn: Boolean) {
         val icon = if (isTorchOn) {
@@ -120,16 +153,9 @@ class PhotoCameraFragment : BaseCameraFragment(R.layout.fragment_photo_camera), 
         photo_camera_toggle_flash_button.setImageResource(icon)
     }
 
-    private fun updateScreenState(state: PhotoCameraState) {
-        listOf(
-            photo_camera_switch_lens_facing_button,
-            photo_camera_toggle_flash_button,
-            photo_camera_toggle_torch_button,
-            photo_camera_take_picture_button
-        ).forEach { view ->
-            view?.isEnabled = state.enableInput
-            view?.alpha = if (state.enableInput) 1f else 0.5f
-        }
+    private fun animateShutter() {
+        photo_camera_shutter_view
     }
+
 
 }
